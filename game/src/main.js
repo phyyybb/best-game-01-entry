@@ -1,134 +1,174 @@
-// Boot and the one loop: input is read every frame, the world advances in fixed 1/60 s steps
-// (several in a slow frame, none in a fast one), and the renderer paints what is there. The game
-// moves between four screens: title, play, paused and game over.
-//
-// ?seed=N fixes the falling pattern. ?shot=start|play|end (with &seed=N) stages that scene
-// instead of running the loop, paints it twice and sets window.__shotReady for a screenshot.
-import { BEST_KEY, LIVES, STEP } from './config.js';
-import { createRandom } from './random.js';
-import { createWorld, EVENT_HIT, EVENT_OVER } from './world.js';
-import { ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
-import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
-import { stageShot } from './shots.js';
+// Boot + fixed-step loop. Owns the phase machine (title / playing / paused / game over),
+// wires input, audio and events to the simulation, and renders every frame. When the URL
+// carries ?shot=start|play|end it instead runs a deterministic autopilot scene for the
+// screenshot harness.
 
-/** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
-const MAX_FRAME = 0.25;
-
-const params = new URLSearchParams(window.location.search);
-const shot = params.get('shot');
-const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
-const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() * 4294967296);
+import { VIEW, TIMESTEP } from './config.js';
+import { World } from './world.js';
+import { createInput } from './input.js';
+import { createAudio } from './audio.js';
+import {
+  drawBackground, drawWorld, drawHud, drawTitle, drawPause, drawGameOver, drawBanner,
+} from './render.js';
+import { shotFromUrl, scriptedInput, shotFrames } from './shots.js';
 
 const canvas = document.getElementById('game');
-const status = document.getElementById('status');
-const world = createWorld(createRandom(seed));
-const renderer = createRenderer(canvas);
+const ctx = canvas.getContext('2d');
+canvas.width = VIEW.w;
+canvas.height = VIEW.h;
 
-function readBest() {
-  try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
-  } catch {
-    return 0;
-  }
+const BEST_KEY = 'deepdrop.best';
+function loadBest() {
+  try { const v = Number(localStorage.getItem(BEST_KEY)); return Number.isFinite(v) && v > 0 ? v : 0; }
+  catch { return 0; }
+}
+function saveBest(v) { try { localStorage.setItem(BEST_KEY, String(v)); } catch {} }
+
+function seedFromUrl(search) {
+  const m = /[?&]seed=(\d+)/.exec(search);
+  return m ? (Number(m[1]) >>> 0) : null;
 }
 
-function saveBest(value) {
-  try {
-    window.localStorage.setItem(BEST_KEY, String(value));
-  } catch {
-    // Storage can be off (private windows): the best score then lasts this visit only.
-  }
+const audio = createAudio();
+const input = createInput();
+
+let phase = 'title';
+let world = null;
+let bestDepth = loadBest();
+let newBest = false;
+let sinceDeath = 0;
+let banner = null;
+const BANNER_TIME = 2.4;
+
+function startRun(seed) {
+  world = new World(seed);
+  phase = 'playing';
+  sinceDeath = 0;
+  newBest = false;
+  banner = { name: world.zone().name, t: 0 };
+  audio.unlock();
+  audio.startDrone();
 }
 
-function runShot(name) {
-  const scene = stageShot(name, world);
-  let painted = 0;
-  function paint() {
-    renderer.draw(world.state, scene.screen, scene.best);
-    painted += 1;
-    if (painted < 2) requestAnimationFrame(paint);
-    else window.__shotReady = true;
-  }
-  requestAnimationFrame(paint);
+function onDied() {
+  const depth = Math.floor(world.depth);
+  newBest = depth > bestDepth;
+  if (newBest) { bestDepth = depth; saveBest(depth); }
+  phase = 'gameover';
+  sinceDeath = 0;
+  audio.stopDrone();
 }
 
-function runGame() {
-  const input = createInput(canvas);
-  let screen = SCREEN_TITLE;
-  let best = readBest();
-  let accumulator = 0;
-  let last = performance.now();
+function pause() {
+  if (phase !== 'playing') return;
+  phase = 'paused';
+  audio.stopDrone();
+}
+function resume() {
+  if (phase !== 'paused') return;
+  phase = 'playing';
+  audio.startDrone();
+}
+function togglePause() {
+  if (phase === 'playing') pause();
+  else if (phase === 'paused') resume();
+}
 
-  // Screen readers (and anyone watching the page's text) hear the screen changes and each hit.
-  function announce(message) {
-    status.textContent = message;
+function handleEvent(ev) {
+  if (ev.type === 'collect') { ev.kind === 'bubble' ? audio.healBubble() : audio.bubble(); }
+  else if (ev.type === 'hit') audio.hit();
+  else if (ev.type === 'zone') { banner = { name: ev.name, t: 0 }; audio.zoneChime(); }
+  else if (ev.type === 'died') onDied();
+}
+
+let acc = 0;
+let last = performance.now();
+
+function frame(now) {
+  const dtReal = Math.min((now - last) / 1000, 0.1);
+  last = now;
+
+  const pressed = input.consumePressed();
+  if (pressed.pause) togglePause();
+  if (pressed.space && (phase === 'title' || phase === 'gameover')) {
+    startRun(seedFromUrl(location.search) ?? ((Math.random() * 0xffffffff) >>> 0));
   }
+  if (input.consumeBlur()) pause();
 
-  function startGame() {
-    world.reset();
-    accumulator = 0;
-    screen = SCREEN_PLAY;
-    announce(`Playing. ${LIVES} lives.`);
-  }
-
-  function endGame() {
-    screen = SCREEN_OVER;
-    if (world.state.score > best) {
-      best = world.state.score;
-      saveBest(best);
+  if (phase === 'playing') {
+    acc += dtReal;
+    while (acc >= TIMESTEP) {
+      acc -= TIMESTEP;
+      for (const ev of world.update(TIMESTEP, input.held)) handleEvent(ev);
+      if (phase !== 'playing') { acc = 0; break; }
     }
-    announce(`Game over. Score ${world.state.score}. Best ${best}.`);
+    audio.setDroneDepth(world.depth);
+  } else if (phase === 'gameover') {
+    sinceDeath += dtReal;
   }
 
-  function handleActions() {
-    const actions = input.takeActions();
-    if (actions & ACTION_CONFIRM && (screen === SCREEN_TITLE || screen === SCREEN_OVER)) startGame();
-    else if (actions & ACTION_PAUSE && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    } else if (actions & (ACTION_PAUSE | ACTION_CONFIRM) && screen === SCREEN_PAUSED) {
-      screen = SCREEN_PLAY;
-      announce('Playing.');
-    }
+  if (banner) {
+    banner.t += dtReal;
+    if (banner.t >= BANNER_TIME) banner = null;
   }
 
-  function step() {
-    if (screen === SCREEN_TITLE) {
-      world.step(STEP, 0, true);
-      return;
-    }
-    const events = world.step(STEP, input.direction(), false);
-    if (events & EVENT_OVER) endGame();
-    else if (events & EVENT_HIT) announce(world.state.lives === 1 ? 'Hit. 1 life left.' : `Hit. ${world.state.lives} lives left.`);
-  }
-
-  function frame(now) {
-    requestAnimationFrame(frame);
-    accumulator += Math.min((now - last) / 1000, MAX_FRAME);
-    last = now;
-    handleActions();
-    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
-      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
-        step();
-        accumulator -= STEP;
-      }
-    } else {
-      accumulator = 0;
-    }
-    renderer.draw(world.state, screen, best);
-  }
-
-  // Leaving the tab pauses a running game rather than letting blocks fall unseen.
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    }
-  });
-
-  announce('Block Dodger. Press Space or click to start.');
+  render(now);
   requestAnimationFrame(frame);
 }
 
+function render(now) {
+  ctx.clearRect(0, 0, VIEW.w, VIEW.h);
+  if (phase === 'title') {
+    drawBackground(ctx, 0);
+    drawTitle(ctx, now / 1000);
+    return;
+  }
+  drawWorld(ctx, world, { sinceDeath });
+  drawHud(ctx, world);
+  if (banner) drawBanner(ctx, banner);
+  if (phase === 'paused') drawPause(ctx);
+  else if (phase === 'gameover') drawGameOver(ctx, world, bestDepth, newBest, sinceDeath, now / 1000);
+}
+
+// --- deterministic screenshot scenes -------------------------------------------
+
+function runShot(shot) {
+  const w = new World(shot.seed);
+  let ph = 'title';
+  let sd = 0;
+  let shotBest = 0;
+  let shotNewBest = false;
+
+  if (shot.kind === 'play') {
+    ph = 'playing';
+    for (let f = 0; f < shotFrames('play'); f++) w.update(TIMESTEP, scriptedInput('play', f, w));
+  } else if (shot.kind === 'end') {
+    for (let f = 0; f < shotFrames('end'); f++) {
+      w.update(TIMESTEP, scriptedInput('end', f, w));
+      if (!w.alive) break;
+    }
+    if (w.alive) w.sink();
+    ph = 'gameover';
+    sd = 1.4;
+    shotBest = Math.floor(w.depth);
+  }
+
+  const now = 0;
+  function draw() {
+    ctx.clearRect(0, 0, VIEW.w, VIEW.h);
+    if (ph === 'title') {
+      drawBackground(ctx, 0);
+      drawTitle(ctx, now);
+      return;
+    }
+    drawWorld(ctx, w, { sinceDeath: sd });
+    drawHud(ctx, w);
+    if (ph === 'gameover') drawGameOver(ctx, w, shotBest, shotNewBest, sd, now);
+  }
+  draw();
+  requestAnimationFrame(function keep() { draw(); requestAnimationFrame(keep); });
+}
+
+const shot = shotFromUrl(location.search);
 if (shot) runShot(shot);
-else runGame();
+else requestAnimationFrame(frame);

@@ -1,53 +1,53 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+// Keyboard handling: tracks held directions and edge-triggered actions (dive, pause),
+// plus a "tab blurred" signal so the caller can auto-pause.
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
+export function createInput() {
+  const held = { left: false, right: false, up: false, down: false };
+  let pressedSpace = false;
+  let pressedPause = false;
+  let blurred = false;
 
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+  function keyOf(e) {
+    const k = e.key;
+    if (k === 'ArrowLeft' || k === 'a' || k === 'A') return 'left';
+    if (k === 'ArrowRight' || k === 'd' || k === 'D') return 'right';
+    if (k === 'ArrowUp' || k === 'w' || k === 'W') return 'up';
+    if (k === 'ArrowDown' || k === 's' || k === 'S') return 'down';
+    if (e.code === 'Space' || k === ' ') return 'space';
+    if (k === 'p' || k === 'P' || k === 'Escape') return 'pause';
+    return null;
+  }
 
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
+  function onKeyDown(e) {
+    const key = keyOf(e);
+    if (!key) return;
+    if (key === 'space') { if (!e.repeat) pressedSpace = true; e.preventDefault(); return; }
+    if (key === 'pause') { if (!e.repeat) pressedPause = true; return; }
+    held[key] = true;
+    e.preventDefault();
+  }
+  function onKeyUp(e) {
+    const key = keyOf(e);
+    if (!key || key === 'space' || key === 'pause') return;
+    held[key] = false;
+  }
+  function onBlur() { blurred = true; }
+  function onVisibility() { if (document.hidden) blurred = true; }
 
-  window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onBlur);
+  document.addEventListener('visibilitychange', onVisibility);
 
   return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
+    held,
+    consumePressed() {
+      const s = pressedSpace, p = pressedPause;
+      pressedSpace = false; pressedPause = false;
+      return { space: s, pause: p };
     },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
+    consumeBlur() {
+      const b = blurred; blurred = false; return b;
     },
   };
 }
