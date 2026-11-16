@@ -3,7 +3,7 @@
 // is identical given the same seed.
 
 import {
-  VIEW, PLAYER, DESCENT, HAZARD, PICKUP, PARTICLES,
+  VIEW, PLAYER, DESCENT, HAZARD, PICKUP, PARTICLES, ZONE_BURST,
   zoneIndexAt, zoneAt, depthRateAt,
 } from './config.js';
 import { makeRng } from './random.js';
@@ -101,6 +101,10 @@ export class World {
     this.entities.push(e);
   }
 
+  _spawnBurst(n) {
+    for (let i = 0; i < n; i++) this._spawnHazard();
+  }
+
   _spawnCollectible() {
     const z = this.zone();
     const type = this._weighted(z.collectWeights);
@@ -162,15 +166,25 @@ export class World {
 
   _moveEntities(dt, scroll) {
     for (const e of this.entities) {
-      if (e.type === 'angler' && e.state === 'lurk') {
-        const dx = this.player.x - e.x;
-        const dy = this.player.y - e.y;
-        if (dx * dx + dy * dy < HAZARD.angler.trigger * HAZARD.angler.trigger && this.player.y < e.y) {
-          const d = Math.hypot(dx, dy) || 1;
-          e.state = 'charge';
-          e.vx = (dx / d) * HAZARD.angler.chargeSpeed * 0.7;
-          e.vy = -HAZARD.angler.chargeSpeed;
-          e.facing = dx >= 0 ? 1 : -1;
+      if (e.type === 'angler') {
+        if (e.state === 'lurk') {
+          const dx = this.player.x - e.x;
+          const dy = this.player.y - e.y;
+          if (dx * dx + dy * dy < HAZARD.angler.trigger * HAZARD.angler.trigger && this.player.y < e.y) {
+            e.state = 'telegraph';
+            e.telegraph = HAZARD.angler.telegraphTime;
+          }
+        } else if (e.state === 'telegraph') {
+          e.telegraph -= dt;
+          if (e.telegraph <= 0) {
+            e.state = 'charge';
+            const dx = this.player.x - e.x;
+            const dy = this.player.y - e.y;
+            const d = Math.hypot(dx, dy) || 1;
+            e.vx = (dx / d) * HAZARD.angler.chargeSpeed * 0.7;
+            e.vy = -HAZARD.angler.chargeSpeed;
+            e.facing = dx >= 0 ? 1 : -1;
+          }
         }
       }
       e.x += e.vx * dt;
@@ -191,7 +205,7 @@ export class World {
 
       if (e.type === 'plankton') {
         this.plankton += 1;
-        events.push({ type: 'collect', kind: 'plankton' });
+        events.push({ type: 'collect', kind: 'plankton', x: e.x, y: e.y });
         return false;
       }
       if (e.type === 'bubble') {
@@ -246,6 +260,7 @@ export class World {
     if (zi !== this.lastZone) {
       this.lastZone = zi;
       events.push({ type: 'zone', index: zi, name: this.zone().name });
+      this._spawnBurst(ZONE_BURST);
     }
 
     this._movePlayer(dt, input);

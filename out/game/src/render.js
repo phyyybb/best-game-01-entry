@@ -2,7 +2,7 @@
 // game-over screens. Pure canvas 2D, no images, no fonts beyond system defaults.
 
 import {
-  VIEW, PLAYER, HAZARD, DEPTH_DARK, zoneAt, paletteAt, darknessAt, css,
+  VIEW, PLAYER, HAZARD, DEPTH_DARK, FX, zoneAt, paletteAt, darknessAt, css,
 } from './config.js';
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -22,7 +22,7 @@ export function drawBackground(ctx, depth) {
   g.addColorStop(0.5, css(p.mid));
   g.addColorStop(1, css(p.bottom));
   ctx.fillStyle = g;
-  ctx.fillRect(0, 0, VIEW.w, VIEW.h);
+  ctx.fillRect(-16, -16, VIEW.w + 32, VIEW.h + 32);
 
   // fading surface light shafts
   const shafts = 1 - darknessAt(depth);
@@ -186,6 +186,7 @@ function drawRock(ctx, e, dark) {
 
 function drawAngler(ctx, e, time) {
   const charging = e.state === 'charge';
+  const telegraph = e.state === 'telegraph';
   const dir = e.facing;
   const bob = Math.sin(time * 2 + e.phase) * 2;
   const lureX = dir * e.r * 0.4 + Math.sin(time * 3 + e.phase) * 3;
@@ -195,12 +196,15 @@ function drawAngler(ctx, e, time) {
   ctx.translate(e.x, e.y);
 
   ctx.globalCompositeOperation = 'lighter';
-  const g = ctx.createRadialGradient(lureX, lureY, 0, lureX, lureY, 22);
-  g.addColorStop(0, 'rgba(255,255,210,0.95)');
-  g.addColorStop(0.3, 'rgba(255,235,140,0.5)');
-  g.addColorStop(1, 'rgba(255,235,140,0)');
+  const hot = telegraph && Math.floor(time * 14) % 2 === 0;
+  const lureC = telegraph ? (hot ? [255, 72, 60] : [130, 22, 18]) : [255, 235, 140];
+  const lureR = telegraph ? 30 : 22;
+  const g = ctx.createRadialGradient(lureX, lureY, 0, lureX, lureY, lureR);
+  g.addColorStop(0, css(lureC, 0.95));
+  g.addColorStop(0.3, css(lureC, 0.5));
+  g.addColorStop(1, css(lureC, 0));
   ctx.fillStyle = g;
-  ctx.beginPath(); ctx.arc(lureX, lureY, 22, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(lureX, lureY, lureR, 0, Math.PI * 2); ctx.fill();
 
   ctx.strokeStyle = 'rgba(40,50,60,0.9)';
   ctx.lineWidth = 2;
@@ -289,7 +293,34 @@ function drawVignette(ctx) {
   ctx.fillRect(0, 0, VIEW.w, VIEW.h);
 }
 
+export function drawHitFlash(ctx, amount) {
+  if (amount <= 0.001) return;
+  const g = ctx.createRadialGradient(VIEW.w / 2, VIEW.h / 2, VIEW.h * 0.25, VIEW.w / 2, VIEW.h / 2, VIEW.h * 0.7);
+  g.addColorStop(0, 'rgba(255,40,30,0)');
+  g.addColorStop(1, `rgba(255,40,30,${0.55 * amount})`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, VIEW.w, VIEW.h);
+}
+
+export function drawRipples(ctx, ripples) {
+  for (const r of ripples) {
+    const t = Math.min(1, r.t / FX.rippleLife);
+    const rad = 6 + (FX.rippleRadius - 6) * t;
+    const a = (1 - t) * 0.7;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(200,255,245,${a})`;
+    ctx.lineWidth = 2 * (1 - t) + 0.5;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, rad, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
 export function drawWorld(ctx, world, opts = {}) {
+  ctx.save();
+  ctx.translate(opts.shakeX ?? 0, opts.shakeY ?? 0);
   drawBackground(ctx, world.depth);
   const pal = paletteAt(world.depth);
   const dark = darknessAt(world.depth);
@@ -306,6 +337,7 @@ export function drawWorld(ctx, world, opts = {}) {
   for (const e of world.entities) drawEntity(ctx, e, world.time, pal, dark);
   drawPlayer(ctx, world, opts.sinceDeath ?? 0);
   drawVignette(ctx);
+  ctx.restore();
 }
 
 function drawHeart(ctx, x, y, s, filled) {
@@ -335,7 +367,7 @@ function drawHearts(ctx, hull) {
   for (let i = 0; i < PLAYER.maxHull; i++) drawHeart(ctx, 24 + i * 34, 26, 22, i < hull);
 }
 
-function drawPlanktonCount(ctx, n) {
+function drawPlanktonCount(ctx, n, combo = 0) {
   const x = 24, y = 58;
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
@@ -352,6 +384,11 @@ function drawPlanktonCount(ctx, n) {
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   ctx.fillText(String(n), x + 18, y);
+  if (combo >= 2) {
+    ctx.fillStyle = 'rgba(255,225,120,0.95)';
+    ctx.font = 'bold 16px "Arial", sans-serif';
+    ctx.fillText(`x${combo}`, x + 18, y + 20);
+  }
 }
 
 function drawZoneLabel(ctx, name) {
@@ -403,9 +440,9 @@ function drawDepthMeter(ctx, depth) {
   ctx.fillText('DEPTH', x, top - 26);
 }
 
-export function drawHud(ctx, world) {
+export function drawHud(ctx, world, combo = 0) {
   drawHearts(ctx, world.hull);
-  drawPlanktonCount(ctx, world.plankton);
+  drawPlanktonCount(ctx, world.plankton, combo);
   drawZoneLabel(ctx, zoneAt(world.depth).name);
   drawDepthMeter(ctx, world.depth);
 }
@@ -432,23 +469,29 @@ export function drawBanner(ctx, banner) {
   ctx.restore();
 }
 
-function drawAmbientMotes(ctx, now) {
+function drawPlanktonField(ctx, now) {
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  for (let i = 0; i < 26; i++) {
-    const px = (i * 137.5) % VIEW.w;
-    const py = VIEW.h - ((i * 89 + now * (6 + (i % 5) * 4)) % VIEW.h);
-    const s = 1.2 + (i % 4);
-    const a = 0.15 + (i % 3) * 0.1;
-    ctx.fillStyle = `rgba(190,245,250,${a})`;
-    ctx.beginPath(); ctx.arc(px, py, s, 0, Math.PI * 2); ctx.fill();
+  for (let i = 0; i < 48; i++) {
+    const speed = 5 + (i % 7) * 3;
+    const px = ((i * 137.5) % VIEW.w) + Math.sin(now * 0.6 + i) * 10;
+    const py = VIEW.h - ((i * 89 + now * speed) % VIEW.h);
+    const r = 1.4 + (i % 4) * 1.1;
+    const a = 0.25 + (i % 3) * 0.14;
+    const g = ctx.createRadialGradient(px, py, 0, px, py, r * 3.5);
+    g.addColorStop(0, `rgba(200,255,245,${a})`);
+    g.addColorStop(1, 'rgba(200,255,245,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(px, py, r * 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(235,255,252,${a})`;
+    ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.fill();
   }
   ctx.restore();
 }
 
 export function drawTitle(ctx, now) {
   const cx = VIEW.w / 2;
-  drawAmbientMotes(ctx, now);
+  drawPlanktonField(ctx, now);
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -463,7 +506,8 @@ export function drawTitle(ctx, now) {
   ctx.restore();
 
   ctx.save();
-  ctx.translate(cx, VIEW.h * 0.52);
+  ctx.translate(cx + Math.sin(now * 0.4) * 6, VIEW.h * 0.52 + Math.sin(now * 0.6) * 12);
+  ctx.rotate(Math.sin(now * 0.5) * 0.06);
   ctx.globalAlpha = 0.3;
   drawSub(ctx, now * 0.5, false);
   ctx.restore();

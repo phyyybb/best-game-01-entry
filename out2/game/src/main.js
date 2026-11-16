@@ -3,12 +3,13 @@
 // carries ?shot=start|play|end it instead runs a deterministic autopilot scene for the
 // screenshot harness.
 
-import { VIEW, TIMESTEP } from './config.js';
+import { VIEW, TIMESTEP, FX } from './config.js';
 import { World } from './world.js';
 import { createInput } from './input.js';
 import { createAudio } from './audio.js';
 import {
   drawBackground, drawWorld, drawHud, drawTitle, drawPause, drawGameOver, drawBanner,
+  drawHitFlash, drawRipples,
 } from './render.js';
 import { shotFromUrl, scriptedInput, shotFrames } from './shots.js';
 
@@ -40,12 +41,19 @@ let sinceDeath = 0;
 let banner = null;
 const BANNER_TIME = 2.4;
 
+let shake = 0;
+let hitFlash = 0;
+const ripples = [];
+let combo = 0;
+let comboTimer = 0;
+
 function startRun(seed) {
   world = new World(seed);
   phase = 'playing';
   sinceDeath = 0;
   newBest = false;
   banner = { name: world.zone().name, t: 0 };
+  shake = 0; hitFlash = 0; ripples.length = 0; combo = 0; comboTimer = 0;
   audio.unlock();
   audio.startDrone();
 }
@@ -75,8 +83,16 @@ function togglePause() {
 }
 
 function handleEvent(ev) {
-  if (ev.type === 'collect') { ev.kind === 'bubble' ? audio.healBubble() : audio.bubble(); }
-  else if (ev.type === 'hit') audio.hit();
+  if (ev.type === 'collect') {
+    if (ev.kind === 'bubble') audio.healBubble();
+    else {
+      audio.bubble();
+      ripples.push({ x: ev.x, y: ev.y, t: 0 });
+      combo += 1;
+      comboTimer = FX.comboWindow;
+    }
+  }
+  else if (ev.type === 'hit') { audio.hit(); shake = 1; hitFlash = 1; }
   else if (ev.type === 'zone') { banner = { name: ev.name, t: 0 }; audio.zoneChime(); }
   else if (ev.type === 'died') onDied();
 }
@@ -87,6 +103,17 @@ let last = performance.now();
 function frame(now) {
   const dtReal = Math.min((now - last) / 1000, 0.1);
   last = now;
+
+  shake = Math.max(0, shake - dtReal / FX.shakeDecay);
+  hitFlash = Math.max(0, hitFlash - dtReal / FX.hitFlashDecay);
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    ripples[i].t += dtReal;
+    if (ripples[i].t >= FX.rippleLife) ripples.splice(i, 1);
+  }
+  if (comboTimer > 0) {
+    comboTimer -= dtReal;
+    if (comboTimer <= 0) combo = 0;
+  }
 
   const pressed = input.consumePressed();
   if (pressed.pause) togglePause();
@@ -123,11 +150,19 @@ function render(now) {
     drawTitle(ctx, now / 1000);
     return;
   }
-  drawWorld(ctx, world, { sinceDeath });
-  drawHud(ctx, world);
+  const t = now / 1000;
+  const s = shake * FX.shakeMag;
+  drawWorld(ctx, world, {
+    sinceDeath,
+    shakeX: Math.sin(t * 147.3) * s,
+    shakeY: Math.cos(t * 131.7) * s,
+  });
+  drawRipples(ctx, ripples);
+  drawHitFlash(ctx, hitFlash);
+  drawHud(ctx, world, combo);
   if (banner) drawBanner(ctx, banner);
   if (phase === 'paused') drawPause(ctx);
-  else if (phase === 'gameover') drawGameOver(ctx, world, bestDepth, newBest, sinceDeath, now / 1000);
+  else if (phase === 'gameover') drawGameOver(ctx, world, bestDepth, newBest, sinceDeath, t);
 }
 
 // --- deterministic screenshot scenes -------------------------------------------

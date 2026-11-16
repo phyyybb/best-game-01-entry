@@ -25,7 +25,7 @@ export const DESCENT = Object.freeze({
 export const HAZARD = Object.freeze({
   jellyfish: { radius: 26, vx: 26, vy: 12, pulse: 2.6 },
   rock: { radius: 20, vyMin: 15, vyMax: 55, vx: 40, spin: 1.6 },
-  angler: { radius: 24, chargeSpeed: 380, trigger: 280, lureLen: 30 },
+  angler: { radius: 24, chargeSpeed: 380, trigger: 280, lureLen: 30, telegraphTime: 0.55 },
 });
 
 export const PICKUP = Object.freeze({
@@ -34,6 +34,15 @@ export const PICKUP = Object.freeze({
 });
 
 export const PARTICLES = Object.freeze({ count: 90 });
+export const ZONE_BURST = 4;
+export const FX = Object.freeze({
+  shakeDecay: 0.45,
+  shakeMag: 7,
+  hitFlashDecay: 0.35,
+  rippleLife: 0.45,
+  rippleRadius: 36,
+  comboWindow: 1.6,
+});
 export const DEPTH_DARK = 1000;
 export const ZONE_METERS = 200;
 
@@ -53,8 +62,8 @@ export const ZONES = [
   },
   {
     name: 'Twilight Zone',
-    speedMult: 1.12,
-    spawnMult: 1.2,
+    speedMult: 1.25,
+    spawnMult: 1.35,
     hazardInterval: 1.95,
     collectInterval: 1.0,
     hazardWeights: { jellyfish: 0.45, rock: 0.38, angler: 0.17 },
@@ -66,8 +75,8 @@ export const ZONES = [
   },
   {
     name: 'Midnight Zone',
-    speedMult: 1.24,
-    spawnMult: 1.45,
+    speedMult: 1.5,
+    spawnMult: 1.75,
     hazardInterval: 1.6,
     collectInterval: 1.1,
     hazardWeights: { jellyfish: 0.4, rock: 0.32, angler: 0.28 },
@@ -79,8 +88,8 @@ export const ZONES = [
   },
   {
     name: 'Abyssal Plain',
-    speedMult: 1.38,
-    spawnMult: 1.75,
+    speedMult: 1.8,
+    spawnMult: 2.2,
     hazardInterval: 1.3,
     collectInterval: 1.2,
     hazardWeights: { jellyfish: 0.34, rock: 0.36, angler: 0.3 },
@@ -92,8 +101,8 @@ export const ZONES = [
   },
   {
     name: 'Hadal Deep',
-    speedMult: 1.55,
-    spawnMult: 2.1,
+    speedMult: 2.1,
+    spawnMult: 2.7,
     hazardInterval: 1.0,
     collectInterval: 1.3,
     hazardWeights: { jellyfish: 0.28, rock: 0.4, angler: 0.32 },
